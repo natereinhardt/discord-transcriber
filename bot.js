@@ -1,66 +1,72 @@
-// @ts-check
-const Discord = require('discord.js')
-const fs = require('fs')
-const execFile = require('child_process').execFile
+// @ts-nocheck
+const {
+  Client,
+  GatewayIntentBits
+} = require("discord.js");
+const fs = require("fs");
+const execFile = require("child_process").execFile;
+
 const config = JSON.parse(
-  fs.readFileSync(require.resolve('./discord.config.json'), 'utf8')
-)
+  fs.readFileSync(require.resolve("./discord.config.json"), "utf8")
+);
+
+const { entersState, joinVoiceChannel, VoiceConnection, VoiceConnectionStatus } = require("@discordjs/voice");
+
 // @ts-ignore
-const speech = require('@google-cloud/speech').v1p1beta1
+const speech = require("@google-cloud/speech").v1p1beta1;
 const speechClient = new speech.SpeechClient({
-  keyFilename: 'google-cloud.credentials.json'
-})
+  keyFilename: "google-cloud.credentials.json",
+});
 
 // This is our logger.
-const pino = require('pino')({
+const pino = require("pino")({
   prettyPrint: true,
-  level: 'trace'
-})
+  level: "trace",
+});
 
 // Crash when something unexpected happens.
 // Let a process manager (e.g. pm2 or Docker) restart it.
-process.on('unhandledRejection', up => {
-  throw up
-})
+process.on("unhandledRejection", (up) => {
+  throw up;
+});
 
 // Keep track of billed usage.
-let totalBilledThisSession = 0
+let totalBilledThisSession = 0;
 
-const client = new Discord.Client()
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-pino.info('Logging in...')
-client.login(config.token)
+pino.info("Logging in...");
+client.login(config.token);
 
-client.on('ready', () => {
-  pino.info('Discord client ready.')
+client.on("ready", async () => {
+  pino.info("Discord client ready.");
 
-  const guild = client.guilds.get(config.guildId)
+  const guild = await client.guilds.fetch(config.guildId);
   if (!guild) {
-    throw new Error('Cannot find guild.')
+    throw new Error("Cannot find guild.");
   }
 
   /** @type {Discord.VoiceChannel} */
   // @ts-ignore
-  const voiceChannel = guild.channels.find(ch => {
-    return ch.name === config.voiceChannelName && ch.type === 'voice'
-  })
+  //console.log(guild)
+  console.log(config.voiceChannelId);
+  const voiceChannel = await guild.channels.resolve(config.voiceChannelId);
+  console.log(voiceChannel);
   if (!voiceChannel) {
-    throw new Error('Cannot find voice channel.')
+    throw new Error("Cannot find voice channel.");
   }
-  pino.info('Voice channel: %s (%s)', voiceChannel.id, voiceChannel.name)
+  pino.info("Voice channel: %s (%s)", voiceChannel.id, voiceChannel.name);
 
   /** @type {Discord.TextChannel} */
   // @ts-ignore
-  const textChannel = guild.channels.find(ch => {
-    return ch.name === config.textChannelName && ch.type === 'text'
-  })
+  const textChannel = guild.channels.resolve(config.textChannelId);
   if (!textChannel) {
-    throw new Error('Cannot find text channel.')
+    throw new Error("Cannot find text channel.");
   }
-  pino.info('Text channel: %s (%s)', textChannel.id, textChannel.name)
+  pino.info("Text channel: %s (%s)", textChannel.id, textChannel.name);
 
-  join(voiceChannel, textChannel)
-})
+  join(voiceChannel, textChannel);
+});
 
 /**
  * Join the voice channel and start listening.
@@ -68,29 +74,52 @@ client.on('ready', () => {
  * @param {Discord.TextChannel} textChannel
  */
 async function join(voiceChannel, textChannel) {
-  pino.trace('Joining voice channel...')
-  const voiceConnection = await voiceChannel.join()
-  const receiver = voiceConnection.createReceiver()
-  pino.info('Voice channel joined.')
+  pino.trace("Joining voice channel...");
+  const voiceConnection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: voiceChannel.guild.id,
+    selfDeaf: false,
+    selfMute: true,
+    adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+  });
+
+  console.log(voiceConnection);
+  await entersState(voiceConnection, VoiceConnectionStatus.Ready, 20e3);
+  const receiver = voiceConnection.receiver 
+
+  receiver.speaking.on('start', (userId) => {
+    console.log('userId', userId)
+    if (recordable.has(userId)) {
+     // createListeningStream(receiver, userId, client.users.cache.get(userId));
+    }
+  });
+  // const sub1 = receiver.subscribe('Nate Armstrong#4109', {
+  //   end: {
+  //     behavior: EndBehaviorType.AfterSilence,
+  //     duration: 1000,
+  //   },
+  // });
+  // console.log(receiver.subscriptions)
+  pino.info("Voice channel joined.");
 
   // Every 60 seconds, report API usage and money spent.
-  let lastReportedUsage = 0
+  let lastReportedUsage = 0;
   setInterval(() => {
     if (totalBilledThisSession === lastReportedUsage) {
-      return
+      return;
     }
-    lastReportedUsage = totalBilledThisSession
-    const money = (lastReportedUsage / 15 * 0.006).toFixed(3)
+    lastReportedUsage = totalBilledThisSession;
+    const money = ((lastReportedUsage / 15) * 0.006).toFixed(3);
     textChannel.send(
       `Google Cloud Speech API usage: ${lastReportedUsage} seconds (\$${money})`
-    )
-  }, 60000)
+    );
+  }, 60000);
 
   /**
    * Map of active recognizers.
    * @type {Map<Discord.User, ReturnType<typeof createRecognizer>>}
    */
-  const recognizers = new Map()
+  const recognizers = new Map();
 
   /**
    * Returns a recognizer for a specified user, creating a new one if
@@ -101,11 +130,11 @@ async function join(voiceChannel, textChannel) {
   function getRecognizer(user) {
     if (recognizers.has(user)) {
       // @ts-ignore
-      return recognizers.get(user)
+      return recognizers.get(user);
     }
-    const recognizer = createRecognizer(user)
-    recognizers.set(user, recognizer)
-    return recognizer
+    const recognizer = createRecognizer(user);
+    recognizers.set(user, recognizer);
+    return recognizer;
   }
 
   /**
@@ -114,58 +143,61 @@ async function join(voiceChannel, textChannel) {
    * @param {Discord.User} user
    */
   function createRecognizer(user) {
-    const hash = require('crypto').createHash('sha256')
-    hash.update(`${user}`)
-    const obfuscatedId = parseInt(hash.digest('hex').substr(0, 12), 16)
+    const hash = require("crypto").createHash("sha256");
+    hash.update(`${user}`);
+    const obfuscatedId = parseInt(hash.digest("hex").substr(0, 12), 16);
 
     /**
      * Raw PCM data from discord.js will be written to this file.
      */
-    const tmpFile = '.tmp/input' + Date.now() + '.s32'
+    const tmpFile = ".tmp/input" + Date.now() + ".s32";
 
     /**
      * Write stream for raw PCM data from discord.js.
      */
-    const writeStream = fs.createWriteStream(tmpFile)
+    const writeStream = fs.createWriteStream(tmpFile);
 
     /**
      * This promise will be resolved when writeStream is closed.
      */
     const written = new Promise((resolve, reject) => {
-      writeStream.on('error', reject)
-      writeStream.on('close', resolve)
-    })
+      writeStream.on("error", reject);
+      writeStream.on("close", resolve);
+    });
 
     /**
      * Timer from handling of a buffer to ending the stream.
      * @type {NodeJS.Timer}
      */
-    let timeout
-    const start = Date.now()
+    let timeout;
+    const start = Date.now();
     const recognizer = {
       /**
        * @param {Buffer} buffer
        */
       handleBuffer(buffer) {
-        clearTimeout(timeout)
-        writeStream.write(buffer)
-        timeout = setTimeout(endStream, Date.now() - start > 10000 ? 500 : 2000)
-      }
-    }
+        clearTimeout(timeout);
+        writeStream.write(buffer);
+        timeout = setTimeout(
+          endStream,
+          Date.now() - start > 10000 ? 500 : 2000
+        );
+      },
+    };
 
-    let ended = false
+    let ended = false;
     /**
      * Ends the stream and self-destruct the recognizer.
      */
     function endStream() {
-      if (ended) return
-      ended = true
-      recognizers.delete(user)
+      if (ended) return;
+      ended = true;
+      recognizers.delete(user);
       pino.trace(
         { activeRecognizers: recognizers.size },
         `Ended stream for ${user}.`
-      )
-      transcribe()
+      );
+      transcribe();
     }
 
     /**
@@ -173,48 +205,48 @@ async function join(voiceChannel, textChannel) {
      */
     async function transcribe() {
       try {
-        const audio = await saveAndConvertAudio()
-        const audioLength = audio.length / 2 / 16000
-        const duration = audioLength.toFixed(2)
+        const audio = await saveAndConvertAudio();
+        const audioLength = audio.length / 2 / 16000;
+        const duration = audioLength.toFixed(2);
         if (audioLength < 1) {
           pino.info(
             `${user} (oid=${obfuscatedId}) spake for ${duration} seconds`
-          )
+          );
         }
-        const billedLength = Math.ceil(audioLength / 15) * 15
-        totalBilledThisSession += billedLength
+        const billedLength = Math.ceil(audioLength / 15) * 15;
+        totalBilledThisSession += billedLength;
         pino.info(
           { billedLength, totalBilledThisSession },
           `${user} (oid=${obfuscatedId}) spake for ${duration} seconds`
-        )
+        );
         const [data] = await speechClient.recognize({
-          audio: { content: audio.toString('base64') },
+          audio: { content: audio.toString("base64") },
           config: {
-            encoding: 'LINEAR16',
+            encoding: "LINEAR16",
             sampleRateHertz: 16000,
             languageCode: config.languageCode,
             maxAlternatives: 1,
             profanityFilter: false,
             metadata: {
-              interactionType: 'PHONE_CALL',
-              obfuscatedId
+              interactionType: "PHONE_CALL",
+              obfuscatedId,
             },
-            model: 'default',
+            model: "default",
             useEnhanced: true,
-            enableAutomaticPunctuation: true
-          }
-        })
+            enableAutomaticPunctuation: true,
+          },
+        });
         if (data.results) {
           for (const result of data.results) {
-            const alt = result.alternatives && result.alternatives[0]
+            const alt = result.alternatives && result.alternatives[0];
             if (alt && alt.transcript) {
-              textChannel.send(`${user}: ${alt.transcript}`)
-              pino.info(`Recognized from ${user}: “${alt.transcript}”`)
+              textChannel.send(`${user}: ${alt.transcript}`);
+              pino.info(`Recognized from ${user}: “${alt.transcript}”`);
             }
           }
         }
       } catch (e) {
-        pino.error(e, 'Failed to recognize')
+        pino.error(e, "Failed to recognize");
       }
     }
 
@@ -223,40 +255,41 @@ async function join(voiceChannel, textChannel) {
      * for Google Cloud Speech-To-Text API.
      */
     async function saveAndConvertAudio() {
-      writeStream.end()
-      await written
+      writeStream.end();
+      await written;
       return new Promise((resolve, reject) => {
         execFile(
-          'sox',
+          "sox",
           [
-            ...['-t', 's32', '-r', '48000', '-c', '1', tmpFile],
-            ...['-t', 's16', '-r', '16000', '-c', '1', '-']
+            ...["-t", "s32", "-r", "48000", "-c", "1", tmpFile],
+            ...["-t", "s16", "-r", "16000", "-c", "1", "-"],
           ],
           {
             maxBuffer: 20 * 1048576,
-            encoding: 'buffer'
+            encoding: "buffer",
           },
           (error, stdout) => {
-            if (error) return reject(error)
-            resolve(stdout)
-            fs.unlink(tmpFile, err => {
+            if (error) return reject(error);
+            resolve(stdout);
+            fs.unlink(tmpFile, (err) => {
               if (err) {
-                pino.error(err, 'Cannot cleanup temp file.')
+                pino.error(err, "Cannot cleanup temp file.");
               }
-            })
+            });
           }
-        )
-      })
+        );
+      });
     }
 
     pino.trace(
       { activeRecognizers: recognizers.size },
       `Starting voice recognition for ${user} (oid=${obfuscatedId})...`
-    )
-    return recognizer
+    );
+    return recognizer;
   }
 
-  receiver.on('pcm', (user, buffer) => {
-    getRecognizer(user).handleBuffer(buffer)
-  })
+  receiver.speaking.on("start", (userId) => {
+    console.log("ITS STARTED", userId)
+    getRecognizer(user).handleBuffer(buffer);
+  });
 }

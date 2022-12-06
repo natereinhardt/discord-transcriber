@@ -1,6 +1,6 @@
 FROM node:8
 RUN mkdir -p /usr/src/app
-RUN echo deb http://http.debian.net/debian jessie-backports main >> /etc/apt/sources.list.d/backports.list && \
+RUN echo deb [check-valid-until=no] http://archive.debian.org/debian jessie-backports main >> /etc/apt/sources.list.d/backports.list && \
     apt-get -y update && \
     apt-get install -y ffmpeg && \
     rm -rf /var/lib/apt/lists/*
